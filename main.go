@@ -32,12 +32,13 @@ import (
 	"k8s.io/apimachinery/pkg/fields"
 	"k8s.io/apimachinery/pkg/labels"
 
-	corev1 "k8s.io/api/core/v1"
-	"sigs.k8s.io/controller-runtime/pkg/cache"
-
 	routev1 "github.com/openshift/api/route/v1"
+	v1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
+	networkingv1 "k8s.io/api/networking/v1"
 	discovery2 "k8s.io/client-go/discovery"
 	"k8s.io/client-go/rest"
+	"sigs.k8s.io/controller-runtime/pkg/cache"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
 	// to ensure that exec-entrypoint and run can make use of them.
@@ -46,6 +47,7 @@ import (
 	grafanav1beta1 "github.com/grafana/grafana-operator/v5/api/v1beta1"
 	"github.com/grafana/grafana-operator/v5/controllers"
 	"github.com/grafana/grafana-operator/v5/controllers/autodetect"
+	"github.com/grafana/grafana-operator/v5/controllers/model"
 	"github.com/grafana/grafana-operator/v5/embeds"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
@@ -119,18 +121,26 @@ func main() {
 		os.Exit(1)
 	}
 
+	cacheLabels := cache.ByObject{Label: labels.SelectorFromSet(model.CommonLabels)}
 	controllerOptions := ctrl.Options{
-		Scheme: scheme,
-		Metrics: metricsserver.Options{
-			BindAddress: metricsAddr,
-		},
-		WebhookServer: webhook.NewServer(webhook.Options{
-			Port: 9443,
-		}),
+		Scheme:                 scheme,
+		Metrics:                metricsserver.Options{BindAddress: metricsAddr},
+		WebhookServer:          webhook.NewServer(webhook.Options{Port: 9443}),
 		HealthProbeBindAddress: probeAddr,
 		LeaderElection:         enableLeaderElection,
 		LeaderElectionID:       "f75f3bba.integreatly.org",
 		PprofBindAddress:       pprofAddr,
+		// Limit caching to reduce heap usage with CommonLabels as selector
+		Cache: cache.Options{ByObject: map[client.Object]cache.ByObject{
+			&v1.Deployment{}:                cacheLabels,
+			&corev1.Service{}:               cacheLabels,
+			&corev1.ServiceAccount{}:        cacheLabels,
+			&networkingv1.Ingress{}:         cacheLabels,
+			&corev1.PersistentVolumeClaim{}: cacheLabels,
+		}},
+	}
+	if isOpenShift {
+		controllerOptions.Cache.ByObject[&routev1.Route{}] = cacheLabels
 	}
 
 	switch {
