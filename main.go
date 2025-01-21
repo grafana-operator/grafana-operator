@@ -18,8 +18,8 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"flag"
+	"fmt"
 	"os"
 	"os/signal"
 	"strings"
@@ -49,7 +49,6 @@ import (
 	"github.com/grafana/grafana-operator/v5/controllers/autodetect"
 	"github.com/grafana/grafana-operator/v5/embeds"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/selection"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -68,7 +67,7 @@ const (
 	// If empty or undefined, the operator will run in cluster scope.
 	watchNamespaceEnvSelector = "WATCH_NAMESPACE_SELECTOR"
 	// watchLabelSelectorsEnvVar is the constant for env variable WATCH_LABEL_SELECTORS which specifies the resources to watch according to their labels.
-	// eg: '{"labelKey": "labelValue"}'
+	// eg: 'partition in (customerA, customerB),environment!=qa'
 	// If empty of undefined, the operator will watch all CRs.
 	watchLabelSelectorsEnvVar = "WATCH_LABEL_SELECTORS"
 )
@@ -127,6 +126,18 @@ func main() {
 		PprofBindAddress:       pprofAddr,
 	}
 
+	var labelSelectors labels.Selector
+	var err error
+	if watchLabelSelectors != "" {
+		labelSelectors, err = labels.Parse(watchLabelSelectors)
+		if err != nil {
+			setupLog.Error(err, fmt.Sprintf("unable to parse %s", watchLabelSelectorsEnvVar))
+			os.Exit(1) //nolint
+		}
+	} else {
+		labelSelectors = labels.Everything() // Match any labels
+	}
+
 	getNamespaceConfig := func(namespaces string) map[string]cache.Config {
 		defaultNamespaces := map[string]cache.Config{}
 		for _, v := range strings.Split(namespaces, ",") {
@@ -135,7 +146,7 @@ func main() {
 			// this is the default behavior of the operator on v5, if you require finer grained control over this
 			// please file an issue in the grafana-operator/grafana-operator GH project
 			defaultNamespaces[v] = cache.Config{
-				LabelSelector:         labels.Everything(), // Match any labels
+				LabelSelector:         labelSelectors,
 				FieldSelector:         fields.Everything(), // Match any fields
 				Transform:             nil,
 				UnsafeDisableDeepCopy: nil,
@@ -163,7 +174,7 @@ func main() {
 			// this is the default behavior of the operator on v5, if you require finer grained control over this
 			// please file an issue in the grafana-operator/grafana-operator GH project
 			defaultNamespaces[v.Name] = cache.Config{
-				LabelSelector:         labels.Everything(), // Match any labels
+				LabelSelector:         labelSelectors,
 				FieldSelector:         fields.Everything(), // Match any fields
 				Transform:             nil,
 				UnsafeDisableDeepCopy: nil,
@@ -187,24 +198,8 @@ func main() {
 
 	case watchNamespace == "" && watchNamespaceSelector == "":
 		// cluster scoped
+		controllerOptions.Cache.DefaultLabelSelector = labelSelectors
 		setupLog.Info("operator running in cluster scoped mode")
-	}
-
-	if watchLabelSelectors != "" {
-		labelSelectors := map[string]string{}
-		err := json.Unmarshal([]byte(watchLabelSelectors), &labelSelectors)
-		if err != nil {
-			setupLog.Error(err, "unable to Unmarshal labelSelectors")
-			os.Exit(1) //nolint
-		}
-		for k, v := range labelSelectors {
-			req, err := labels.NewRequirement(k, selection.Equals, []string{v}, nil)
-			if err != nil {
-				setupLog.Error(err, "unable to create labels selector")
-				os.Exit(1) //nolint
-			}
-			controllerOptions.Cache.DefaultLabelSelector.Add(*req)
-		}
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGINT, syscall.SIGTERM, syscall.SIGPIPE)
